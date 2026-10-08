@@ -67,6 +67,8 @@ const DuplicateChecker = function () {
 
 const StrollScanner = function () {
   BaseScanner.call(this)
+  // 新版蚂蚁森林好友界面不再需要识别能量球，进入好友页后直接点击“一键收”
+  this.force_one_key_collect = true
   this.duplicateChecker = new DuplicateChecker()
   this.first_check = true
   this.init = function (option) {
@@ -122,6 +124,11 @@ const StrollScanner = function () {
       automator.click(region[0] + region[2] / 2, region[1] + region[3] / 2)
       sleep(300)
       hasNext = this.collectTargetFriend()
+      if (hasNext) {
+        // 新版蚂蚁森林流程：收取完当前好友能量后，需要按返回键回到自己的森林主页，
+        // 再重新点击“找能量”进入下一个好友，如此循环直到所有好友能量收取完毕
+        this.backToOwnHomePage()
+      }
     }
     WarningFloaty.clearAll()
     let result = { regenerate_stroll_button: this._regenerate_stroll_button }
@@ -131,7 +138,7 @@ const StrollScanner = function () {
 
   this.backToListIfNeeded = function (rentery, obj, temp) {
     if (!rentery) {
-      debugInfo('准备逛下一个，等待200ms')
+      debugInfo('当前好友能量收取完毕，等待200ms后返回自己的森林主页')
       sleep(200)
       return true
     } else {
@@ -140,6 +147,28 @@ const StrollScanner = function () {
       obj.recheck = true
       return this.doCollectTargetFriend(obj, temp)
     }
+  }
+
+  /**
+   * 返回自己的森林主页
+   * 新版蚂蚁森林在收取完好友能量后，需要按返回键回到自己的森林主页，
+   * 之后才能重新点击“找能量”进入下一个好友页面
+   */
+  this.backToOwnHomePage = function () {
+    // 收集完好友能量后当前一般处于好友首页，直接按返回键即可回到自己的森林主页
+    let tryCount = 1
+    while (tryCount <= 3) {
+      debugInfo(['返回自己的森林主页，第{}次', tryCount])
+      automator.back()
+      sleep(500)
+      if (_widgetUtils.homePageWaiting()) {
+        debugInfo(['已返回自己的森林主页，尝试次数：{}', tryCount])
+        return true
+      }
+      tryCount++
+    }
+    warnInfo('返回自己的森林主页失败，可能界面异常', true)
+    return false
   }
 
   this.doIfProtected = function (obj) {

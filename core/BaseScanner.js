@@ -136,7 +136,11 @@ const BaseScanner = function () {
   // 收取能量
   this.collectEnergy = function (isOwn) {
     this.collect_operated = false
-    if (!isOwn && _config.use_one_key_collect && (YoloDetection.enabled || _config.image_config.one_key_collect)) {
+    if (!isOwn && (this.force_one_key_collect || (_config.use_one_key_collect && (YoloDetection.enabled || _config.image_config.one_key_collect)))) {
+      // 好友界面无需再识别能量球，直接使用一键收
+      if (this.force_one_key_collect) {
+        debugInfo('好友界面强制使用一键收，跳过能量球识别')
+      }
       this.collectByOneKeyCollect()
       return
     }
