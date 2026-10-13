@@ -116,7 +116,7 @@ const StrollScanner = function () {
         debugInfo('全部都在白名单，没有可以逛一逛的了')
         break
       }
-      debugInfo(['逛下一个, click random region: [{}]', JSON.stringify(region)])
+      logInfo('点击找能量进入下一个好友')
       this.visualHelper.addRectangle('准备点击下一个', region)
       WarningFloaty.addRectangle('逛一逛按钮区域', region, '#00ff00')
       this.visualHelper.displayAndClearAll()
@@ -126,7 +126,7 @@ const StrollScanner = function () {
       hasNext = this.collectTargetFriend()
       if (hasNext) {
         // 新版蚂蚁森林流程：收取完当前好友能量后，需要按返回键回到自己的森林主页，
-        // 再重新点击“找能量”进入下一个好友，如此循环直到所有好友能量收取完毕
+        // 再重新点击"找能量"进入下一个好友，如此循环直到所有好友能量收取完毕
         this.backToOwnHomePage()
       }
     }
@@ -149,6 +149,32 @@ const StrollScanner = function () {
     }
   }
 
+  // 保存父类 doCollectTargetFriend 以便回退
+  let _parentDoCollectTargetFriend = this.doCollectTargetFriend
+  /**
+   * 覆盖父类方法：强制一键收模式下，新版好友页是canvas渲染，
+   * 跳过所有基于控件树的能量统计/浇水/森林赠礼/小队能量等无效等待，
+   * 只做：点击一键收 → 记录结果 → 返回
+   */
+  this.doCollectTargetFriend = function (obj, toastListenThread) {
+    if (!this.force_one_key_collect) {
+      return _parentDoCollectTargetFriend.call(this, obj, toastListenThread)
+    }
+    let friendStart = new Date().getTime()
+    logInfo(['开始收取好友「{}」', obj.name])
+    this.target = obj.name
+    this.collectEnergy()
+    if (this.collect_operated) {
+      this.collect_any = true
+      logInfo(['好友「{}」一键收完成，耗时{}ms', obj.name, new Date().getTime() - friendStart])
+    } else {
+      this.failed_count = (this.failed_count || 0) + 1
+      warnInfo(['好友「{}」一键收未成功，耗时{}ms', obj.name, new Date().getTime() - friendStart])
+    }
+    events.removeAllListeners('toast')
+    return this.backToListIfNeeded(false, obj)
+  }
+
   /**
    * 返回自己的森林主页
    * 新版蚂蚁森林在收取完好友能量后，需要按返回键回到自己的森林主页，
@@ -162,7 +188,7 @@ const StrollScanner = function () {
       automator.back()
       sleep(500)
       if (_widgetUtils.homePageWaiting()) {
-        debugInfo(['已返回自己的森林主页，尝试次数：{}', tryCount])
+        logInfo(['已返回自己的森林主页，尝试次数：{}', tryCount])
         return true
       }
       tryCount++

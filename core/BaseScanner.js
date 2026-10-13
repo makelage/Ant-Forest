@@ -159,6 +159,30 @@ const BaseScanner = function () {
   this.collectByOneKeyCollect = function () {
 
     let start = new Date().getTime()
+
+    // 快速路径：强制一键收模式下，新版好友页是canvas渲染，无"展开好友动态"等控件，
+    // 直接全屏OCR识别"一键收"，跳过所有无效的控件等待和YOLO/图片识别
+    if (this.force_one_key_collect) {
+      let fastLimit = _config.double_check_collect ? 2 : 1
+      while (fastLimit-- > 0) {
+        WarningFloaty.clearAll()
+        sleep(30)
+        if (this.oneKeyCollectByOcr()) {
+          this.one_key_had_success = true
+          this.collect_operated = true
+          if (_config.double_check_collect && fastLimit > 0) {
+            sleep(150)
+            continue
+          }
+          break
+        } else {
+          break
+        }
+      }
+      logInfo(['强制一键收总耗时：{}ms', new Date().getTime() - start])
+      return
+    }
+
     let haveValidBalls = false
     let recheck = false
     let limit = 3
@@ -218,8 +242,13 @@ const BaseScanner = function () {
             warnInfo(['未能通过YOLO识别一键收位置，建议收集YOLO图片数据，并上传 让作者进一步训练'])
           }
           sleep(500)
-          // 兜底的OCR识别一键收
-          if (this.oneKeyCollectByOcr()) {
+          // 优先通过控件文本动态定位“一键收”，避免依赖固定坐标
+          if (this.clickOneKeyByWidget()) {
+            this.one_key_had_success = true
+            this.collect_operated = true
+            haveValidBalls = true
+          } else if (this.oneKeyCollectByOcr()) {
+            // 兜底：全屏OCR识别“一键收”，不使用任何固定区域
             this.collect_operated = true
             haveValidBalls = true
           }
@@ -258,15 +287,38 @@ const BaseScanner = function () {
   }
 
   /**
+   * 通过控件文本查找“一键收”按钮，动态获取控件位置后再点击，避免依赖固定坐标
+   * @returns {boolean} 是否成功点击
+   */
+  this.clickOneKeyByWidget = function () {
+    let target = _widgetUtils.widgetGetOne('一键收', 500)
+    if (target && target.target) {
+      let bounds = target.target.bounds()
+      debugInfo(['通过控件文本定位到一键收：[{}]', JSON.stringify([bounds.left, bounds.top, bounds.right, bounds.bottom])])
+      WarningFloaty.addRectangle('一键收', [bounds.left, bounds.top, bounds.width(), bounds.height()])
+      clickOneKeyPoint(bounds.centerX(), bounds.centerY())
+      return true
+    }
+    return false
+  }
+
+  /**
    * 尝试OCR识别一键收，识别成功后将现有文字区域截图 覆盖配置的一键收图片 image_config.one_key_collect
    * @returns 
    */
   this.oneKeyCollectByOcr = function () {
     let screen = _commonFunctions.checkCaptureScreenPermission()
-    let ocrRegion = ((w, h) => [0.2 * w, 0.4 * h, 0.6 * w, 0.3 * h])(_config.device_width, _config.device_height)
-    debugInfo(['尝试ocr识别一键收，识别区域：[{}]', JSON.stringify(ocrRegion)])
-    WarningFloaty.addRectangle('OCR识别区域', ocrRegion)
-    let ocrCheck = localOcrUtil.recognizeWithBounds(screen, ocrRegion, '一键收')
+    if (!screen) {
+      errorInfo('获取截图失败，无法OCR识别一键收')
+      return false
+    }
+    if (!localOcrUtil.enabled) {
+      warnInfo(['本地OCR未启用，无法通过OCR识别一键收，请安装MlkitOCR插件或配置PaddleOCR'])
+      return false
+    }
+    // 不限制识别区域，直接对整屏截图做 OCR，通过“一键收”文字动态定位，避免写死坐标
+    let ocrCheck = localOcrUtil.recognizeWithBounds(screen, null, '一键收')
+    logInfo(['全屏OCR识别“一键收”结果数：{}', ocrCheck ? ocrCheck.length : 0])
     if (ocrCheck && ocrCheck.length > 0) {
       let bounds = ocrCheck[0].bounds
       debugInfo(['识别结果：{}', JSON.stringify(bounds)])
@@ -279,14 +331,14 @@ const BaseScanner = function () {
         bounds.left, bounds.top,
         bounds.right - bounds.left, bounds.bottom - bounds.top
       ]
-      debugInfo(['通过ocr找到了目标：{}', region])
+      logInfo(['通过全屏OCR定位到一键收：[{}]，中心点：({}, {})', JSON.stringify(region), bounds.left + (bounds.right - bounds.left) * 0.5, bounds.top + (bounds.bottom - bounds.top) * 0.5])
       let subImage = images.clip(images.cvtColor(images.grayscale(screen), 'GRAY2BGRA'), region[0], region[1], region[2], region[3])
       _config.overwrite('image_config.one_key_collect', images.toBase64(subImage))
       WarningFloaty.addRectangle('一键收', region)
       clickOneKeyPoint(bounds.left + (bounds.right - bounds.left) * 0.5, bounds.top + (bounds.bottom - bounds.top) * 0.5)
       return true
     } else {
-      warnInfo(['无法通过ocr找到一键收，可能当前有活动元素阻断'])
+      warnInfo('全屏OCR未能识别到一键收，可尝试在可视化配置中配置“一键收”按钮图片')
     }
     return false
   }
@@ -738,11 +790,11 @@ const BaseScanner = function () {
    * @param {string} name
    */
   this.protectInfoDetect = function (name) {
-    let loadMoreButton = _widgetUtils.widgetGetOne(_config.friend_load_more_content || '展开好友动态', 1000)
-    if (!this.is_own && _config.use_one_key_collect && _config.image_config.one_key_collect) {
+    if (!this.is_own && (this.force_one_key_collect || (_config.use_one_key_collect && _config.image_config.one_key_collect))) {
       debugInfo('一键收模式下不进行保护罩校验')
       return
     }
+    let loadMoreButton = _widgetUtils.widgetGetOne(_config.friend_load_more_content || '展开好友动态', 1000)
     this.isProtectDetectDone = false
     this.isProtected = false
 
