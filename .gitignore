@@ -16,3 +16,5 @@ lib/FakeWalkDataUtil.js
 *.onnx
 trainData/
 extends/PostExecution.js
+.arts
+.codeartsdoer
