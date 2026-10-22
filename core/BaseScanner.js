@@ -307,38 +307,47 @@ const BaseScanner = function () {
    * @returns 
    */
   this.oneKeyCollectByOcr = function () {
-    let screen = _commonFunctions.checkCaptureScreenPermission()
-    if (!screen) {
-      errorInfo('获取截图失败，无法OCR识别一键收')
-      return false
-    }
-    if (!localOcrUtil.enabled) {
-      warnInfo(['本地OCR未启用，无法通过OCR识别一键收，请安装MlkitOCR插件或配置PaddleOCR'])
-      return false
-    }
-    // 不限制识别区域，直接对整屏截图做 OCR，通过“一键收”文字动态定位，避免写死坐标
-    let ocrCheck = localOcrUtil.recognizeWithBounds(screen, null, '一键收')
-    logInfo(['全屏OCR识别“一键收”结果数：{}', ocrCheck ? ocrCheck.length : 0])
-    if (ocrCheck && ocrCheck.length > 0) {
-      let bounds = ocrCheck[0].bounds
-      debugInfo(['识别结果：{}', JSON.stringify(bounds)])
-      try {
-        debugInfo(['{} {} {} {}', bounds.left, bounds.top, bounds.width(), bounds.height])
-      } catch (e) {
-        // pass
+    // 好友页为H5渲染，「一键收」按钮可能出现较慢，最多尝试两次，避免首次截图过早导致漏收
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      let screen = _commonFunctions.checkCaptureScreenPermission()
+      if (!screen) {
+        errorInfo('获取截图失败，无法OCR识别一键收')
+        return false
       }
-      let region = [
-        bounds.left, bounds.top,
-        bounds.right - bounds.left, bounds.bottom - bounds.top
-      ]
-      logInfo(['通过全屏OCR定位到一键收：[{}]，中心点：({}, {})', JSON.stringify(region), bounds.left + (bounds.right - bounds.left) * 0.5, bounds.top + (bounds.bottom - bounds.top) * 0.5])
-      let subImage = images.clip(images.cvtColor(images.grayscale(screen), 'GRAY2BGRA'), region[0], region[1], region[2], region[3])
-      _config.overwrite('image_config.one_key_collect', images.toBase64(subImage))
-      WarningFloaty.addRectangle('一键收', region)
-      clickOneKeyPoint(bounds.left + (bounds.right - bounds.left) * 0.5, bounds.top + (bounds.bottom - bounds.top) * 0.5)
-      return true
-    } else {
-      warnInfo('全屏OCR未能识别到一键收，可尝试在可视化配置中配置“一键收”按钮图片')
+      if (!localOcrUtil.enabled) {
+        warnInfo(['本地OCR未启用，无法通过OCR识别一键收，请安装MlkitOCR插件或配置PaddleOCR'])
+        return false
+      }
+      // 不限制识别区域，直接对整屏截图做 OCR，通过“一键收”文字动态定位，避免写死坐标
+      let ocrCheck = localOcrUtil.recognizeWithBounds(screen, null, '一键收')
+      logInfo(['全屏OCR识别“一键收”结果数：{}', ocrCheck ? ocrCheck.length : 0])
+      if (ocrCheck && ocrCheck.length > 0) {
+        let bounds = ocrCheck[0].bounds
+        debugInfo(['识别结果：{}', JSON.stringify(bounds)])
+        try {
+          debugInfo(['{} {} {} {}', bounds.left, bounds.top, bounds.width(), bounds.height])
+        } catch (e) {
+          // pass
+        }
+        let region = [
+          bounds.left, bounds.top,
+          bounds.right - bounds.left, bounds.bottom - bounds.top
+        ]
+        logInfo(['通过全屏OCR定位到一键收：[{}]，中心点：({}, {})', JSON.stringify(region), bounds.left + (bounds.right - bounds.left) * 0.5, bounds.top + (bounds.bottom - bounds.top) * 0.5])
+        let subImage = images.clip(images.cvtColor(images.grayscale(screen), 'GRAY2BGRA'), region[0], region[1], region[2], region[3])
+        _config.overwrite('image_config.one_key_collect', images.toBase64(subImage))
+        WarningFloaty.addRectangle('一键收', region)
+        clickOneKeyPoint(bounds.left + (bounds.right - bounds.left) * 0.5, bounds.top + (bounds.bottom - bounds.top) * 0.5)
+        return true
+      } else {
+        if (attempt === 1) {
+          warnInfo('首次全屏OCR未能识别到一键收，500ms后重试一次')
+          WarningFloaty.clearAll()
+          sleep(500)
+        } else {
+          warnInfo('全屏OCR未能识别到一键收，可尝试在可视化配置中配置“一键收”按钮图片')
+        }
+      }
     }
     return false
   }

@@ -99,17 +99,13 @@ const StrollScanner = function () {
    */
   this.collecting = function () {
     let hasNext = true
-    let region = null
-    if (_config.stroll_button_left && !_config.stroll_button_regenerate && !this._regenerate_stroll_button) {
-      region = [_config.stroll_button_left, _config.stroll_button_top, _config.stroll_button_width, _config.stroll_button_height]
-    } else {
+    let region = getEffectiveStrollRegion()
+    if (_config.stroll_button_regenerate || this._regenerate_stroll_button) {
       let successful = regenerateStrollButton()
       if (!successful) {
-        warnInfo('自动识别逛一逛按钮失败，请主动配置区域或者图片信息', true)
-        hasNext = false
-      } else {
-        region = [_config.stroll_button_left, _config.stroll_button_top, _config.stroll_button_width, _config.stroll_button_height]
+        warnInfo('自动识别逛一逛按钮失败，使用比例兜底区域继续尝试', true)
       }
+      region = getEffectiveStrollRegion()
     }
     while (hasNext) {
       if (this.duplicateChecker.checkIsAllDuplicated()) {
@@ -238,7 +234,8 @@ StrollScanner.prototype.collectTargetFriend = function () {
   if (_config.friend_home_check_regex.indexOf('的蚂蚁森林') < 0) {
     _config.overwrite('friend_home_check_regex', _config.friend_home_check_regex + '|.*的蚂蚁森林')
   }
-  // 未找到好友首页控件 循环等待三次
+  // 未找到好友首页控件 循环等待（H5页面切换约需2秒，按500ms轮次共等待4秒）
+  let blindRetryCount = 0
   while ((alternativeFriendOrDone = _widgetUtils.alternativeWidget(_config.friend_home_check_regex, _config.stroll_end_ui_content || /找能量共获得.*/, null, false, null, { algorithm: 'PVDFS' })) !== 1) {
     // 找到了结束标志信息 停止逛一逛
     let ended = false
@@ -257,7 +254,17 @@ StrollScanner.prototype.collectTargetFriend = function () {
       '未能进入主页，等待500ms count:' + count++
     )
     sleep(500)
-    if (count >= 3) {
+    if (count >= 8) {
+      // 超时后先盲重试点击逛一逛按钮（最多2次），避免H5加载慢被误判为按钮不正确
+      if (blindRetryCount < 2 && !this.regenerated_stroll_button) {
+        blindRetryCount++
+        warnInfo(['未能进入好友主页，第{}次盲重试点击逛一逛按钮', blindRetryCount])
+        let retryRegion = getEffectiveStrollRegion()
+        automator.clickRandomRegion({ left: retryRegion[0], top: retryRegion[1], width: retryRegion[2], height: retryRegion[3] })
+        sleep(1200)
+        count = 1
+        continue
+      }
       if (!this.regenerated_stroll_button) {
         warnInfo(['可能逛一逛按钮不正确，重新识别'])
         if (regenerateStrollButton()) {
@@ -422,6 +429,35 @@ module.exports = StrollScanner
 
 // inner functions
 
+/**
+ * 获取有效的逛一逛（找能量）按钮区域，支持不同分辨率
+ * 1. 优先使用配置区域，但需校验在屏幕内且中心点比例处于中下部合理范围
+ * 2. 配置失效/缺失时按屏幕比例兜底（基于 1220x2712 实测「找能量」中心比例 0.911/0.655）
+ */
+function getEffectiveStrollRegion () {
+  let deviceWidth = _config.device_width
+  let deviceHeight = _config.device_height
+  if (_config.stroll_button_left && _config.stroll_button_top && _config.stroll_button_width && _config.stroll_button_height) {
+    let region = [parseInt(_config.stroll_button_left), parseInt(_config.stroll_button_top), parseInt(_config.stroll_button_width), parseInt(_config.stroll_button_height)]
+    _commonFunctions.ensureRegionInScreen(region)
+    let centerXRatio = (region[0] + region[2] / 2) / deviceWidth
+    let centerYRatio = (region[1] + region[3] / 2) / deviceHeight
+    if (centerXRatio > 0.6 && centerXRatio < 0.99 && centerYRatio > 0.5 && centerYRatio < 0.85) {
+      return region
+    }
+    debugInfo(['逛一逛按钮配置区域比例不合理，使用比例兜底: centerX={} centerY={}', centerXRatio.toFixed(3), centerYRatio.toFixed(3)])
+  }
+  // 比例兜底：按钮中心位于屏幕宽度91%、高度65.5%处，尺寸按比例放大并留裕量
+  let regionWidth = Math.max(140, parseInt(deviceWidth * 0.18))
+  let regionHeight = Math.max(70, parseInt(deviceHeight * 0.05))
+  let centerX = parseInt(deviceWidth * 0.911)
+  let centerY = parseInt(deviceHeight * 0.655)
+  let region = [centerX - parseInt(regionWidth / 2), centerY - parseInt(regionHeight / 2), regionWidth, regionHeight]
+  _commonFunctions.ensureRegionInScreen(region)
+  debugInfo(['使用比例兜底逛一逛按钮区域：{}', JSON.stringify(region)])
+  return region
+}
+
 function refillStrollInfo (region) {
   _config.stroll_button_left = parseInt(region[0])
   _config.stroll_button_top = parseInt(region[1])
@@ -463,15 +499,30 @@ function regenerateByYolo (screen) {
 }
 
 function regenerateByOcr (screen) {
-  let ocrCheck = ocrFindText(screen, '找能量', 1)
+  // OCR对「找能量」的识别不稳定（实测可能出现「-我能量>」「-找能量>」等误差），
+  // 改用宽松正则：匹配以「能量」+「>」结尾的短文本，避免误匹配「TA待收的能量」等无>文本
+  let ocrCheck = ocrFindText(screen, '.{0,3}能量\\s*>', 1)
   if (ocrCheck) {
     let bounds = ocrCheck.bounds
     if (!bounds) {
       return false
     }
+    // 过滤明显不合理的结果：尺寸不超过按钮合理范围，且中心点位于屏幕中下部
+    let width = bounds.right - bounds.left
+    let height = bounds.bottom - bounds.top
+    let centerX = (bounds.left + bounds.right) / 2
+    let centerY = (bounds.top + bounds.bottom) / 2
+    if (width > _config.device_width * 0.4 || height > _config.device_height * 0.08) {
+      debugInfo(['OCR识别到的能量按钮尺寸不合理，忽略: w={} h={}', width, height])
+      return false
+    }
+    if (centerY < _config.device_height * 0.55 || centerY > _config.device_height * 0.85) {
+      debugInfo(['OCR识别到的能量按钮位置不合理，忽略: centerY={}', centerY])
+      return false
+    }
     region = [
       bounds.left, bounds.top,
-      bounds.width(), bounds.height()
+      width, height
     ]
     refillStrollInfo(region)
     return true
